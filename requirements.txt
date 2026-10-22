@@ -1,0 +1,54 @@
+# ================================
+# LLM & LANGCHAIN
+# ================================
+
+langchain
+langchain-core
+langchain-ollama
+langchain-community
+langchain-text-splitters
+
+
+# ================================
+# TAVILY SEARCH TOOL
+# ================================
+
+tavily-python
+
+
+# ================================
+# WEB SCRAPING
+# ================================
+
+beautifulsoup4
+requests
+lxml
+
+
+# ================================
+# ENVIRONMENT VARIABLES
+# ================================
+
+python-dotenv
+
+
+# ================================
+# HTTP / ASYNC SUPPORT
+# ================================
+
+httpx
+aiohttp
+
+
+# ================================
+# DATA VALIDATION
+# ================================
+
+pydantic
+
+
+# ================================
+# OPTIONAL UTILITIES
+# ================================
+
+typing-extensions
