@@ -18,7 +18,7 @@ from agents import (
     summary_chain,
     writer_chain,
 )
-from tools import format_results, scrape_webpage, web_search
+from tools import format_results, scrape_webpage, search_web_results
 
 
 def raise_model_connection_error(error: Exception, step_name: str) -> None:
@@ -134,7 +134,9 @@ def run_research_pipeline(
             on_progress(stage, message)
 
     progress("search", f"Sending research query to web search: {topic}")
-    search_data = web_search.invoke(topic)
+    search_data = search_web_results(topic)
+    if not isinstance(search_data, dict):
+        raise TypeError("Web search must return a results dictionary.")
     results = search_data.get("results", [])
     if not results:
         raise RuntimeError("Web search returned no results.")
