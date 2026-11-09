@@ -1,18 +1,49 @@
 from langchain.agents import create_agent
 from langchain_ollama import ChatOllama
+from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from tools import web_search, scrape_webpage
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 import os
 
 load_dotenv()
 
-#model setup
+def get_config(key: str, default: str | None = None) -> str | None:
+    try:
+        value = st.secrets.get(key)
+    except StreamlitSecretNotFoundError:
+        value = None
+
+    if value is None or value == "":
+        value = os.getenv(key, default)
+
+    return value if value is not None else default
+
+
+OLLAMA_BASE_URL = (
+    (get_config("OLLAMA_BASE_URL", "http://localhost:11434") or "")
+    .strip()
+    .rstrip("/")
+    or "http://localhost:11434"
+)
+OLLAMA_PROXY_TOKEN = get_config("OLLAMA_PROXY_TOKEN")
+
+ollama_kwargs = {}
+if OLLAMA_PROXY_TOKEN:
+    ollama_kwargs["client_kwargs"] = {
+        "headers": {"Authorization": f"Bearer {OLLAMA_PROXY_TOKEN}"}
+    }
+
+# model setup
 llm = ChatOllama(
     model="qwen2.5:3b",
+    base_url=OLLAMA_BASE_URL,
     temperature=0,
-    max_tokens=1300,
+    num_predict=1300,
+    **ollama_kwargs,
 )
 
 
@@ -28,14 +59,21 @@ class ResearchReport(BaseModel):
 
 
 class ResearchReportCritique(BaseModel):
-    score: float = Field(description="A score out of 10 based on the quality of the report.")
-    feedback: str = Field(description="Detailed feedback on the report, including areas for improvement.")
+    score: float = Field(description="A score out of 10 based on the quality of the research response.")
+    score_rationale: str = Field(description="Specific reasons for the score, addressing relevance, evidence support, clarity, and completeness based on this response.")
+    feedback: str = Field(description="A concise overall quality assessment of the research response.")
+    suggestions: list[str] = Field(description="Three prioritized, actionable suggestions grounded in gaps visible in this response.")
     verdict: str = Field(description="A one-line summary of the evaluation.")
 
 
 class SummaryReport(BaseModel):
     summary: str = Field(description="A useful one-line answer about the research topic.")
     sources: list[str] = Field(description="The source URLs used for this summary.")
+
+
+class ResearchAnswer(BaseModel):
+    answer: str = Field(description="A concise answer grounded only in the retrieved research sources.")
+    source_ids: list[str] = Field(description="IDs of retrieved sources that directly support the answer.")
 
 
 #1st agent: Web Search Agent
@@ -61,7 +99,7 @@ Research:
 {research}"""),
 ])
 
-writer_chain = writer_prompt | llm.with_structured_output(ResearchReport)
+writer_chain = writer_prompt | llm.bind(format=ResearchReport.model_json_schema()) | JsonOutputParser()
 
 summary_prompt = ChatPromptTemplate.from_messages([
     ("system", "Write a precise one-line research summary."),
@@ -73,15 +111,25 @@ Research:
 {research}"""),
 ])
 
-summary_chain = summary_prompt | llm.with_structured_output(SummaryReport)
+summary_chain = summary_prompt | llm.bind(format=SummaryReport.model_json_schema()) | JsonOutputParser()
+
+qa_prompt = ChatPromptTemplate.from_messages([
+    ("system", """Answer the question using only the retrieved evidence. If the evidence does not support an answer, say so clearly and return no source IDs. Do not use outside knowledge. Return only source IDs shown in the evidence, and include only sources that directly support your answer."""),
+    ("human", """Question: {question}
+
+Retrieved evidence:
+{context}"""),
+])
+
+qa_chain = qa_prompt | llm.with_structured_output(ResearchAnswer)
 
 #critic chain
 critic_prompt = ChatPromptTemplate.from_messages([
-        ("system", "Evaluate this research report briefly and constructively."),
-        ("human", """Review this report. Give a score from 0 to 10, brief feedback, and a one-line verdict.
+    ("system", "Evaluate this research response fairly and constructively. It may be a full report or a one-line summary; judge it appropriately for its format. Base the score rationale on visible relevance, evidence support, clarity, and completeness. Never invent shortcomings that are not visible in the response."),
+    ("human", """Review this research response. Give a score from 0 to 10, explain the specific reasons for that score, provide concise overall feedback, give exactly 3 prioritized actionable suggestions, and give a one-line verdict. Suggestions must address visible gaps and be relevant even when the response is a short summary. Do not penalize a summary merely for being short.
 
-Research Report: {research_report}
+Research Response: {research_report}
 """),
 ])
-critic_llm = llm.bind(max_tokens=300)
-critic_chain = critic_prompt | critic_llm.with_structured_output(ResearchReportCritique)
+critic_llm = llm.bind(options={"num_predict": 500})
+critic_chain = critic_prompt | critic_llm.bind(format=ResearchReportCritique.model_json_schema()) | JsonOutputParser()

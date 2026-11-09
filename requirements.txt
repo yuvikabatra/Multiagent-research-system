@@ -7,6 +7,7 @@ langchain-core
 langchain-ollama
 langchain-community
 langchain-text-splitters
+rank-bm25
 
 
 # ================================
@@ -38,6 +39,8 @@ python-dotenv
 
 httpx
 aiohttp
+fastapi
+uvicorn
 
 
 # ================================
