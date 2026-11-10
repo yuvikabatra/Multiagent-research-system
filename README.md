@@ -34,8 +34,8 @@ variables on other hosting platforms.
 ### Faster report generation
 
 The detailed report is generated with a capped output budget to reduce writer
-latency. The quality review is optional because it requires a second, sequential
-model call; leave **Run quality review** unchecked for the quickest result.
+latency. The quality review is enabled by default and can be unchecked to skip
+its second, sequential model call for the quickest result.
 To enable review for command-line runs by default, set `ENABLE_CRITIC=true`.
 Choose **One-line summary** when you need the fastest, shortest output.
 

@@ -13,7 +13,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel
 
 from agents import (
-    OLLAMA_BASE_URL,
     ResearchReport,
     ResearchReportCritique,
     SummaryReport,
@@ -29,6 +28,7 @@ SEARCH_TIMEOUT_SECONDS = 10
 SCRAPE_TIMEOUT_SECONDS = 12
 WRITER_RESERVE_SECONDS = 3
 MAX_SOURCES_TO_SCRAPE = 3
+REVIEW_TIMEOUT_SECONDS = 20
 
 T = TypeVar("T")
 
@@ -141,11 +141,23 @@ def build_fallback_report(topic: str, report_mode: str, source_documents: list[d
 
 
 def raise_model_connection_error(error: Exception, step_name: str) -> None:
-    if "connection refused" in str(error).lower():
+    error_text = str(error).lower()
+    if any(
+        marker in error_text
+        for marker in (
+            "connection refused",
+            "name or service not known",
+            "getaddrinfo failed",
+            "nodename nor servname",
+            "temporary failure in name resolution",
+        )
+    ):
         raise RuntimeError(
-            f"{step_name} could not connect to Ollama at {OLLAMA_BASE_URL}. "
-            "For a deployed app, set OLLAMA_BASE_URL to an Ollama server reachable "
-            "from the deployment; localhost refers to the app container."
+            f"{step_name} cannot reach the Ollama server. Check that "
+            "OLLAMA_BASE_URL in the app's deployment secrets/environment uses a "
+            "valid hostname and points to a server reachable from the deployment. "
+            "On Streamlit Cloud, localhost refers to the cloud container, not your "
+            "computer. Confirm Ollama is running and has qwen2.5:3b installed."
         ) from error
 
 
@@ -301,10 +313,12 @@ def run_research_pipeline(
             "critique": None,
             "source_documents": [],
             "review_note": (
-                "Quality review was skipped because search returned no evidence."
+                "Quality review was skipped because no report could be generated "
+                "without search results."
                 if should_run_critic
-                else None
+                else "Quality review was not requested."
             ),
+            "review_requested": should_run_critic,
             "generation_note": (
                 f"{fallback_reason} The returned report contains no sourced claims."
             ),
@@ -407,7 +421,13 @@ def run_research_pipeline(
     critique = None
     review_note = None
     if should_run_critic:
-        if remaining_budget() > 0 and not writer_timed_out:
+        if writer_timed_out:
+            review_note = (
+                "Quality review was skipped because AI report writing failed. "
+                "Fix the Ollama connection and generate the report again."
+            )
+            progress("reviewer", review_note)
+        elif remaining_budget() > 0:
             progress("reviewer", "Reviewer agent is scoring the report")
             try:
                 critique = run_bounded(
@@ -419,7 +439,7 @@ def run_research_pipeline(
                         lambda partial: emit(("reviewer_update", partial)),
                         lambda message: emit(("progress", "reviewer", message)),
                     ),
-                    min(10, remaining_budget()),
+                    min(REVIEW_TIMEOUT_SECONDS, remaining_budget()),
                     dispatch_event,
                 )
             except TimeoutError:
@@ -431,12 +451,15 @@ def run_research_pipeline(
         else:
             review_note = "Quality review skipped to return the report within its time budget."
             progress("reviewer", review_note)
+    else:
+        review_note = "Quality review was not requested."
     return {
         "topic": topic,
         "report_mode": report_mode,
         "report": report,
         "critique": critique,
         "review_note": review_note,
+        "review_requested": should_run_critic,
         "source_documents": source_documents,
         "generation_note": (
             f"Quick fallback report: {fallback_reason} Claims use only available search "

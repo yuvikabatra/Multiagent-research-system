@@ -197,6 +197,7 @@ def render_report(result: dict) -> None:
     st.markdown(f"### {result['topic']}")
 
     critique = result.get("critique")
+    review_note = result.get("review_note")
     metric_one, metric_two, metric_three = st.columns(3)
     with metric_one:
         st.markdown(f'<div class="metric-card"><div class="metric-label">Output</div><div class="metric-value">{"Summary" if mode == "summary" else "Detailed"}</div></div>', unsafe_allow_html=True)
@@ -204,7 +205,14 @@ def render_report(result: dict) -> None:
         st.markdown(f'<div class="metric-card"><div class="metric-label">Sources read</div><div class="metric-value">{len(report.sources)}</div></div>', unsafe_allow_html=True)
     with metric_three:
         metric_label = "Quality score" if critique else "Review status"
-        metric_value = f"{critique.score:g}/10" if critique else "Not run"
+        if critique:
+            metric_value = f"{critique.score:g}/10"
+        elif review_note and "not requested" in review_note.lower():
+            metric_value = "Not requested"
+        elif review_note:
+            metric_value = "Skipped"
+        else:
+            metric_value = "Pending"
         st.markdown(f'<div class="metric-card"><div class="metric-label">{metric_label}</div><div class="metric-value">{metric_value}</div></div>', unsafe_allow_html=True)
 
     if mode == "summary":
@@ -303,7 +311,7 @@ with st.container(border=True):
         )
         include_review = st.checkbox(
             "Run quality review (adds another model call)",
-            value=False,
+            value=True,
         )
         submitted = st.form_submit_button(
             "Generate research",
