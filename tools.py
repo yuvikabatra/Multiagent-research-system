@@ -84,11 +84,18 @@ def format_results(result: dict) -> str:
 
 def search_web_results(query: str) -> dict:
     """Return raw Tavily search results for use by the research pipeline."""
-    return tavily.search(
-        query=query,
-        max_results=MAX_SEARCH_RESULTS,
-        timeout=8,
-    )
+    try:
+        return tavily.search(
+            query=query,
+            max_results=MAX_SEARCH_RESULTS,
+            timeout=8,
+        )
+    except requests.exceptions.ConnectionError:
+        return tavily.search(
+            query=query,
+            max_results=MAX_SEARCH_RESULTS,
+            timeout=8,
+        )
 
 
 @tool

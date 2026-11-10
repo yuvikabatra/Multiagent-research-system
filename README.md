@@ -39,6 +39,8 @@ external services or the hosting platform are unavailable. Fallback reports
 identify whether they use search snippets or retrieved webpage text and warn
 that claims should be checked against the linked sources.
 
-To keep more time available for report writing, web search is capped at 8
-seconds and source scraping at 12 seconds. The app scrapes up to three sources
-in parallel and uses the search snippets when source pages are slow.
+To keep more time available for report writing, each web search request has an
+8-second timeout, with one retry for connection failures within the app's
+10-second search budget. Source scraping is capped at 12 seconds. The app
+scrapes up to three sources in parallel and uses the search snippets when
+source pages are slow.
