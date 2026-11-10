@@ -10,7 +10,6 @@ from typing import TypeVar
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pydantic import BaseModel
 
 from agents import (
     ResearchReport,
@@ -153,11 +152,9 @@ def raise_model_connection_error(error: Exception, step_name: str) -> None:
         )
     ):
         raise RuntimeError(
-            f"{step_name} cannot reach the Ollama server. Check that "
-            "OLLAMA_BASE_URL in the app's deployment secrets/environment uses a "
-            "valid hostname and points to a server reachable from the deployment. "
-            "On Streamlit Cloud, localhost refers to the cloud container, not your "
-            "computer. Confirm Ollama is running and has qwen2.5:3b installed."
+            f"{step_name} cannot reach the Groq API. Check the deployment's "
+            "internet/DNS connectivity and confirm GROQ_API_KEY is configured "
+            "in Streamlit Secrets or the hosting environment."
         ) from error
 
 
@@ -424,7 +421,7 @@ def run_research_pipeline(
         if writer_timed_out:
             review_note = (
                 "Quality review was skipped because AI report writing failed. "
-                "Fix the Ollama connection and generate the report again."
+                "Check the Groq API key and connectivity, then try again."
             )
             progress("reviewer", review_note)
         elif remaining_budget() > 0:
@@ -511,9 +508,9 @@ if __name__ == "__main__":
         print_report(run_research_pipeline(topic, report_mode))
     except Exception as error:
         error_text = str(error)
-        if "connection" in error_text or "ollama" in error_text:
-            print("\nResearch pipeline failed: Ollama is not running.")
-            print("Start Ollama, then run this command again: ollama serve")
+        if "connection" in error_text or "groq" in error_text:
+            print("\nResearch pipeline failed: the Groq API is unreachable.")
+            print("Check GROQ_API_KEY and the network connection, then try again.")
         elif "429" in error_text or "rate_limited" in error_text:
             print("\nResearch pipeline failed: the local model is busy.")
             print("Wait briefly and run again.")

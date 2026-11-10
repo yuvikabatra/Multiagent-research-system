@@ -6,13 +6,13 @@ import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
 try:
-    for secret_name in ("OLLAMA_BASE_URL", "TAVILY_API_KEY"):
+    for secret_name in ("GROQ_API_KEY", "TAVILY_API_KEY"):
         if secret_name not in os.environ and secret_name in st.secrets:
             os.environ[secret_name] = str(st.secrets[secret_name])
 except StreamlitSecretNotFoundError:
     pass
 
-from agents import OLLAMA_BASE_URL
+from agents import GROQ_MODEL
 from auth import login, signup
 from pipeline import answer_research_question, run_research_pipeline
 
@@ -282,12 +282,8 @@ with st.sidebar:
         "3. Search and review the report"
     )
     st.markdown("### Model")
-    is_local_ollama = OLLAMA_BASE_URL.startswith(("http://localhost", "http://127.0.0.1"))
-    st.badge("Local Ollama" if is_local_ollama else "Remote Ollama", icon=":material/lock:", color="green")
-    if is_local_ollama:
-        st.caption("Runs qwen2.5:3b with your local Ollama server. No paid LLM API is required.")
-    else:
-        st.caption("Runs qwen2.5:3b through the configured Ollama server.")
+    st.badge("Groq Cloud", icon=":material/cloud:", color="green")
+    st.caption(f"Runs {GROQ_MODEL} through the configured Groq API key.")
     st.markdown("### Output modes")
     st.caption("Detailed report for deeper reading, or one-line summary for a quick answer.")
 
