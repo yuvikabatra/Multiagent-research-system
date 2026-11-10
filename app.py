@@ -1,3 +1,5 @@
+from collections.abc import Callable
+import inspect
 import os
 
 import streamlit as st
@@ -13,6 +15,34 @@ except StreamlitSecretNotFoundError:
 from agents import OLLAMA_BASE_URL
 from auth import login, signup
 from pipeline import answer_research_question, run_research_pipeline
+
+
+def run_research_with_compatible_options(
+    topic: str,
+    report_mode: str,
+    on_progress: Callable[[str, str], None],
+    on_writer_update: Callable[[dict], None],
+    include_critic: bool,
+) -> dict:
+    parameters = inspect.signature(run_research_pipeline).parameters
+    supports_critic_option = "include_critic" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if supports_critic_option:
+        return run_research_pipeline(
+            topic,
+            report_mode,
+            on_progress=on_progress,
+            on_writer_update=on_writer_update,
+            include_critic=include_critic,
+        )
+    return run_research_pipeline(
+        topic,
+        report_mode,
+        on_progress=on_progress,
+        on_writer_update=on_writer_update,
+    )
 
 
 st.set_page_config(
@@ -335,12 +365,12 @@ if submitted:
                 writer_slot.markdown("\n\n".join(sections) or "Writer is preparing the first section...")
 
             try:
-                result = run_research_pipeline(
+                result = run_research_with_compatible_options(
                     topic.strip(),
                     selected_mode,
-                    on_progress=show_progress,
-                    on_writer_update=show_writer_update,
-                    include_critic=include_review,
+                    show_progress,
+                    show_writer_update,
+                    include_review,
                 )
                 status.update(label="Research complete", state="complete", expanded=False)
                 st.session_state["research_result"] = result
