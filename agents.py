@@ -38,7 +38,7 @@ llm = ChatGroq(
     model=GROQ_MODEL,
     api_key=GROQ_API_KEY,
     temperature=0,
-    max_tokens=1300,
+    max_tokens=4096,
     timeout=90,
     max_retries=2,
 )
@@ -119,7 +119,10 @@ writer_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
         "Write a structured, balanced, evidence-based research report. "
-        "Avoid unsupported claims.",
+        "Use only facts supported by the supplied research. Include the relevant "
+        "source URL with each key finding and evidence-and-implication point. "
+        "Treat search snippets as preliminary evidence and do not fill gaps with "
+        "outside knowledge.",
     ),
     (
         "human",

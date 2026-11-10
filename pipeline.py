@@ -72,8 +72,28 @@ def run_bounded(
 
 
 def build_fallback_report(topic: str, report_mode: str, source_documents: list[dict]):
-    """Create an explicitly limited report using only retrieved source snippets."""
+    """Create an explicitly limited report using the retrieved evidence."""
     source_urls = [source["url"] for source in source_documents if source.get("url")]
+    uses_search_snippets = any(
+        source.get("source_type") == "search_snippet"
+        for source in source_documents
+    )
+    evidence_basis = (
+        "available search snippets"
+        if uses_search_snippets
+        else "retrieved webpage text"
+        if source_documents
+        else "available search material"
+    )
+    evidence_limitation = (
+        "Search snippets may omit context, methods, dates, or qualifications from "
+        "the linked pages."
+        if uses_search_snippets
+        else "Extracted webpage text may omit context, methods, dates, or "
+        "qualifications from the linked pages."
+        if source_documents
+        else "No source text was available to substantiate findings."
+    )
     evidence = []
     seen_sentences = set()
     for source in source_documents:
@@ -92,7 +112,7 @@ def build_fallback_report(topic: str, report_mode: str, source_documents: list[d
     if report_mode == "summary":
         if evidence:
             summary = (
-                f"Quick, snippet-based findings about {topic}: "
+                f"Quick findings about {topic}, based on {evidence_basis}: "
                 f"{evidence[0]}"
             )
         else:
@@ -106,7 +126,7 @@ def build_fallback_report(topic: str, report_mode: str, source_documents: list[d
         "Available search material did not establish another independent finding."
     ] * (4 - len(evidence))
     summary = (
-        f"Quick report about {topic}, based only on the available search snippets. "
+        f"Quick report about {topic}, based only on {evidence_basis}. "
         f"{evidence[0]}"
         if evidence
         else f"No search evidence was available to substantiate findings about {topic}."
@@ -114,8 +134,9 @@ def build_fallback_report(topic: str, report_mode: str, source_documents: list[d
     return ResearchReport(
         executive_summary=summary,
         introduction=(
-            f"This time-limited brief summarizes available search snippets about "
-            f"{topic}; it is not a substitute for reviewing the full sources."
+            f"This time-limited brief summarizes {evidence_basis} about {topic}. "
+            f"{evidence_limitation} Verify claims against the linked sources before "
+            "relying on them."
         ),
         key_findings=findings,
         evidence_and_implications=[
@@ -124,12 +145,13 @@ def build_fallback_report(topic: str, report_mode: str, source_documents: list[d
         ],
         limitations=[
             "This brief uses the time-limited fallback rather than AI synthesis.",
-            "Snippets may omit context, methods, dates, or qualifications from the full sources.",
+            evidence_limitation,
         ],
         improvements_to_be_done=[
             f"Compare {topic} across at least two independent primary sources and include dates or measurements.",
             f"Add a recent dataset or case study relevant to {topic}, including its methodology and sample size.",
-            "Verify each claim against the linked full-text source; this quick brief uses snippets only.",
+            f"Verify each claim against the linked source; this quick brief uses "
+            f"{evidence_basis}.",
         ],
         conclusion=(
             "Treat this quick brief as preliminary; verify the claims against the linked "
@@ -364,11 +386,17 @@ def run_research_pipeline(
     for url, content in fetched_by_index.values():
         scraped_contents.append(f"Source: {url}\n{content}")
         sources.append(url)
-        source_documents.append({"url": url, "content": content})
+        source_documents.append(
+            {"url": url, "content": content, "source_type": "webpage"}
+        )
 
     if not source_documents:
         source_documents = [
-            {"url": result["url"], "content": content[:1000]}
+            {
+                "url": result["url"],
+                "content": content[:1000],
+                "source_type": "search_snippet",
+            }
             for result in results[:max_sources]
             if (url := result.get("url"))
             and (content := result.get("content") or result.get("snippet") or "").strip()
@@ -450,6 +478,22 @@ def run_research_pipeline(
             progress("reviewer", review_note)
     else:
         review_note = "Quality review was not requested."
+    if source_documents and any(
+        source.get("source_type") == "search_snippet"
+        for source in source_documents
+    ):
+        evidence_note = (
+            "Claims use only available search snippets; verify the full sources "
+            "before relying on them."
+        )
+    elif source_documents:
+        evidence_note = (
+            "Claims use retrieved webpage text, which may be incomplete; verify "
+            "them against the linked sources before relying on them."
+        )
+    else:
+        evidence_note = "No source text was available; the report contains no sourced claims."
+
     return {
         "topic": topic,
         "report_mode": report_mode,
@@ -459,11 +503,10 @@ def run_research_pipeline(
         "review_requested": should_run_critic,
         "source_documents": source_documents,
         "generation_note": (
-            f"Quick fallback report: {fallback_reason} Claims use only available search "
-            "snippets; verify the full sources before relying on them."
+            f"Quick fallback report: {fallback_reason} {evidence_note}"
             if writer_timed_out
             else (
-                f"{fallback_reason} The AI writer used the available search snippets."
+                f"{fallback_reason} {evidence_note}"
                 if fallback_reason
                 else None
             )
