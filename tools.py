@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env (local development)
 load_dotenv()
 
+MAX_SEARCH_RESULTS = 5
+
 
 def get_tavily_api_key():
     """
@@ -84,8 +86,8 @@ def search_web_results(query: str) -> dict:
     """Return raw Tavily search results for use by the research pipeline."""
     return tavily.search(
         query=query,
-        max_results=5,
-        timeout=12,
+        max_results=MAX_SEARCH_RESULTS,
+        timeout=8,
     )
 
 
@@ -124,7 +126,7 @@ def scrape_webpage(url: str) -> str:
 
         response = requests.get(
             url,
-            timeout=10,
+            timeout=6,
             headers={
                 "User-Agent": "Mozilla/5.0"
             }

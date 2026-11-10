@@ -25,9 +25,10 @@ from agents import (
 from tools import format_results, scrape_webpage, search_web_results
 
 REQUEST_DEADLINE_SECONDS = 100
-SEARCH_TIMEOUT_SECONDS = 15
-SCRAPE_TIMEOUT_SECONDS = 25
+SEARCH_TIMEOUT_SECONDS = 10
+SCRAPE_TIMEOUT_SECONDS = 12
 WRITER_RESERVE_SECONDS = 3
+MAX_SOURCES_TO_SCRAPE = 3
 
 T = TypeVar("T")
 
@@ -313,7 +314,7 @@ def run_research_pipeline(
     scraped_contents = []
     sources = []
     source_documents = []
-    max_sources = min(5, len(results))
+    max_sources = min(MAX_SOURCES_TO_SCRAPE, len(results))
     source_urls = [result.get("url") for result in results[:max_sources] if result.get("url")]
     for index in range(1, len(source_urls) + 1):
         progress("reader", f"Fetching source {index} of {len(source_urls)}.")
@@ -369,6 +370,7 @@ def run_research_pipeline(
     report_chain = writer_chain if report_mode == "detailed" else summary_chain
     report_model = ResearchReport if report_mode == "detailed" else SummaryReport
     writer_timed_out = False
+    writer_failure_reason = None
     if remaining_budget() <= 0:
         writer_timed_out = True
     else:
@@ -390,12 +392,14 @@ def run_research_pipeline(
             writer_timed_out = True
         except Exception as error:
             writer_timed_out = True
-            fallback_reason = f"AI report writing failed: {error}"
+            writer_failure_reason = f"AI report writing failed: {error}"
 
     if writer_timed_out:
         report = build_fallback_report(topic, report_mode, source_documents)
         report.sources = sources or report.sources
-        if fallback_reason:
+        if writer_failure_reason:
+            fallback_reason = writer_failure_reason
+        elif fallback_reason:
             fallback_reason += " AI report writing also exceeded its time budget."
         else:
             fallback_reason = "AI report writing exceeded the time budget."

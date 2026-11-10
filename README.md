@@ -46,6 +46,10 @@ for the model indefinitely. This bounds the app's wait under normal runtime
 conditions; it cannot guarantee a successful, fully AI-written report when
 external services or the hosting platform are unavailable.
 
+To keep more time available for report writing, web search is capped at 8
+seconds and source scraping at 12 seconds. The app scrapes up to three sources
+in parallel and uses the search snippets when source pages are slow.
+
 ### Optional Ollama proxy
 
 If Ollama runs on a separate machine, `ollama_proxy.py` can forward authenticated
