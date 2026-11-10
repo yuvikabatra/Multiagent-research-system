@@ -92,10 +92,10 @@ def render_sources(sources: list[str]) -> None:
             st.caption("No source URLs were returned.")
 
 
-def render_reviewer_review(critique) -> None:
+def render_reviewer_review(critique, review_note: str | None = None) -> None:
     st.subheader("Reviewer agent", icon=":material/rate_review:")
     if not critique:
-        st.caption("Quality review was not run.")
+        st.caption(review_note or "Quality review was not run.")
         return
 
     st.metric("Quality score", f"{critique.score:g}/10")
@@ -162,6 +162,8 @@ def render_report(result: dict) -> None:
     mode = result["report_mode"]
 
     st.success("Research complete", icon=":material/check_circle:")
+    if result.get("generation_note"):
+        st.warning(result["generation_note"], icon=":material/hourglass_top:")
     st.markdown(f"### {result['topic']}")
 
     critique = result.get("critique")
@@ -180,7 +182,7 @@ def render_report(result: dict) -> None:
             st.caption("One-line summary")
             st.markdown(f"#### {report.summary}")
         render_sources(report.sources)
-        render_reviewer_review(critique)
+        render_reviewer_review(critique, result.get("review_note"))
         return
 
     executive_summary = getattr(report, "executive_summary", report.introduction)
@@ -222,7 +224,7 @@ def render_report(result: dict) -> None:
         st.write(report.conclusion)
 
     render_sources(report.sources)
-    render_reviewer_review(critique)
+    render_reviewer_review(critique, result.get("review_note"))
 
 
 with st.sidebar:
@@ -268,6 +270,10 @@ with st.container(border=True):
             options=["Detailed report", "One-line summary"],
             default="Detailed report",
             selection_mode="single",
+        )
+        include_review = st.checkbox(
+            "Run quality review (adds another model call)",
+            value=False,
         )
         submitted = st.form_submit_button(
             "Generate research",
@@ -334,6 +340,7 @@ if submitted:
                     selected_mode,
                     on_progress=show_progress,
                     on_writer_update=show_writer_update,
+                    include_critic=include_review,
                 )
                 status.update(label="Research complete", state="complete", expanded=False)
                 st.session_state["research_result"] = result

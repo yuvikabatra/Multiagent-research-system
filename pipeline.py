@@ -1,7 +1,11 @@
 import time
 import os
+import queue
+import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable
+from typing import TypeVar
 
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
@@ -19,6 +23,120 @@ from agents import (
     writer_chain,
 )
 from tools import format_results, scrape_webpage, search_web_results
+
+REQUEST_DEADLINE_SECONDS = 100
+SEARCH_TIMEOUT_SECONDS = 15
+SCRAPE_TIMEOUT_SECONDS = 25
+WRITER_RESERVE_SECONDS = 3
+
+T = TypeVar("T")
+
+
+def run_bounded(
+    operation: Callable[[Callable[[tuple], None]], T],
+    timeout_seconds: float,
+    on_event: Callable[[tuple], None] | None = None,
+) -> T:
+    """Run blocking work without letting it hold the request past its deadline."""
+    events: queue.Queue[tuple[str, object]] = queue.Queue()
+
+    def run() -> None:
+        try:
+            emit = lambda event: events.put(("event", event))
+            events.put(("result", operation(emit)))
+        except Exception as error:
+            events.put(("error", error))
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + max(0, timeout_seconds)
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("The operation exceeded its time budget.")
+        try:
+            event_type, payload = events.get(timeout=min(0.1, remaining))
+        except queue.Empty:
+            continue
+
+        if event_type == "event":
+            if on_event:
+                on_event(payload)
+        elif event_type == "error":
+            if isinstance(payload, Exception):
+                raise payload
+            raise RuntimeError("The bounded operation failed unexpectedly.")
+        else:
+            return payload
+
+
+def build_fallback_report(topic: str, report_mode: str, source_documents: list[dict]):
+    """Create an explicitly limited report using only retrieved source snippets."""
+    source_urls = [source["url"] for source in source_documents if source.get("url")]
+    evidence = []
+    seen_sentences = set()
+    for source in source_documents:
+        url = source.get("url", "")
+        for sentence in re.split(r"(?<=[.!?])\s+", source.get("content", "")):
+            sentence = " ".join(sentence.split())
+            if not sentence or sentence.casefold() in seen_sentences:
+                continue
+            seen_sentences.add(sentence.casefold())
+            evidence.append(f"{sentence[:260]} (Source: {url})")
+            if len(evidence) == 4:
+                break
+        if len(evidence) == 4:
+            break
+
+    if report_mode == "summary":
+        if evidence:
+            summary = (
+                f"Quick, snippet-based findings about {topic}: "
+                f"{evidence[0]}"
+            )
+        else:
+            summary = (
+                f"No search evidence was available to produce a sourced summary "
+                f"about {topic}."
+            )
+        return SummaryReport(summary=summary, sources=source_urls)
+
+    findings = evidence + [
+        "Available search material did not establish another independent finding."
+    ] * (4 - len(evidence))
+    summary = (
+        f"Quick report about {topic}, based only on the available search snippets. "
+        f"{evidence[0]}"
+        if evidence
+        else f"No search evidence was available to substantiate findings about {topic}."
+    )
+    return ResearchReport(
+        executive_summary=summary,
+        introduction=(
+            f"This time-limited brief summarizes available search snippets about "
+            f"{topic}; it is not a substitute for reviewing the full sources."
+        ),
+        key_findings=findings,
+        evidence_and_implications=[
+            f"{finding} Its broader implications need confirmation from the full source."
+            for finding in findings[:3]
+        ],
+        limitations=[
+            "This brief uses the time-limited fallback rather than AI synthesis.",
+            "Snippets may omit context, methods, dates, or qualifications from the full sources.",
+        ],
+        improvements_to_be_done=[
+            f"Compare {topic} across at least two independent primary sources and include dates or measurements.",
+            f"Add a recent dataset or case study relevant to {topic}, including its methodology and sample size.",
+            "Verify each claim against the linked full-text source; this quick brief uses snippets only.",
+        ],
+        conclusion=(
+            "Treat this quick brief as preliminary; verify the claims against the linked "
+            "full sources before relying on them."
+        ),
+        sources=source_urls,
+    )
 
 
 def raise_model_connection_error(error: Exception, step_name: str) -> None:
@@ -121,25 +239,75 @@ def run_research_pipeline(
     on_progress: Callable[[str, str], None] | None = None,
     on_writer_update: Callable[[dict], None] | None = None,
     on_reviewer_update: Callable[[dict], None] | None = None,
+    include_critic: bool | None = None,
 ) -> dict:
-    """Search, scrape, write, and critique a report for the supplied topic."""
+    """Search, scrape, and write a report; optionally critique it."""
     if not topic.strip():
         raise ValueError("Please enter a research topic.")
     if report_mode not in {"detailed", "summary"}:
         raise ValueError("Report mode must be 'detailed' or 'summary'.")
+
+    deadline = time.monotonic() + REQUEST_DEADLINE_SECONDS
+
+    def remaining_budget() -> float:
+        return max(0, deadline - time.monotonic() - WRITER_RESERVE_SECONDS)
 
     def progress(stage: str, message: str) -> None:
         print(message)
         if on_progress:
             on_progress(stage, message)
 
+    def dispatch_event(event: tuple) -> None:
+        event_type, *payload = event
+        if event_type == "progress":
+            progress(payload[0], payload[1])
+        elif event_type == "writer_update" and on_writer_update:
+            on_writer_update(payload[0])
+        elif event_type == "reviewer_update" and on_reviewer_update:
+            on_reviewer_update(payload[0])
+
+    should_run_critic = (
+        include_critic
+        if include_critic is not None
+        else os.getenv("ENABLE_CRITIC", "false").lower() == "true"
+    )
+
     progress("search", f"Sending research query to web search: {topic}")
-    search_data = search_web_results(topic)
+    fallback_reason = None
+    try:
+        search_data = run_bounded(
+            lambda _emit: search_web_results(topic),
+            min(SEARCH_TIMEOUT_SECONDS, remaining_budget()),
+        )
+    except TimeoutError:
+        search_data = {"results": []}
+        fallback_reason = "Web search exceeded its time budget."
+    except Exception as error:
+        search_data = {"results": []}
+        fallback_reason = f"Web search failed: {error}"
+
     if not isinstance(search_data, dict):
         raise TypeError("Web search must return a results dictionary.")
     results = search_data.get("results", [])
     if not results:
-        raise RuntimeError("Web search returned no results.")
+        fallback_reason = fallback_reason or "Web search returned no results."
+        report = build_fallback_report(topic, report_mode, [])
+        progress("writer", "Returning a quick fallback report.")
+        return {
+            "topic": topic,
+            "report_mode": report_mode,
+            "report": report,
+            "critique": None,
+            "source_documents": [],
+            "review_note": (
+                "Quality review was skipped because search returned no evidence."
+                if should_run_critic
+                else None
+            ),
+            "generation_note": (
+                f"{fallback_reason} The returned report contains no sourced claims."
+            ),
+        }
     progress("search", f"Search returned {len(results)} results.")
 
     scraped_contents = []
@@ -147,32 +315,45 @@ def run_research_pipeline(
     source_documents = []
     max_sources = min(5, len(results))
     source_urls = [result.get("url") for result in results[:max_sources] if result.get("url")]
-    fetched_by_index = {}
-    with ThreadPoolExecutor(max_workers=min(5, max(1, len(source_urls)))) as executor:
-        pending_scrapes = {}
-        for index, url in enumerate(source_urls, start=1):
-            progress("reader", f"Fetching source {index} of {len(source_urls)}.")
-            pending_scrapes[executor.submit(scrape_webpage.invoke, url)] = (index, url)
+    for index in range(1, len(source_urls) + 1):
+        progress("reader", f"Fetching source {index} of {len(source_urls)}.")
 
-        for pending_scrape in as_completed(pending_scrapes):
-            index, url = pending_scrapes[pending_scrape]
-            try:
-                content = pending_scrape.result()
-            except Exception as error:
-                progress("reader", f"Source {index} fetch failed.")
-                continue
-            if not content.startswith("Error fetching"):
-                fetched_by_index[index] = (url, content)
-                progress("reader", f"Source {index} of {len(source_urls)} fetched.")
-            else:
-                progress("reader", f"Source {index} fetch failed.")
+    def scrape_sources() -> dict:
+        fetched = {}
+        with ThreadPoolExecutor(max_workers=min(5, max(1, len(source_urls)))) as executor:
+            pending_scrapes = {
+                executor.submit(scrape_webpage.invoke, url): (index, url)
+                for index, url in enumerate(source_urls, start=1)
+            }
+            for pending_scrape in as_completed(pending_scrapes):
+                index, url = pending_scrapes[pending_scrape]
+                try:
+                    content = pending_scrape.result()
+                except Exception:
+                    continue
+                if not content.startswith("Error fetching"):
+                    fetched[index] = (url, content)
+        return fetched
+
+    scrape_timed_out = False
+    try:
+        fetched_by_index = run_bounded(
+            lambda _emit: scrape_sources(),
+            min(SCRAPE_TIMEOUT_SECONDS, remaining_budget()),
+        )
+    except TimeoutError:
+        fetched_by_index = {}
+        scrape_timed_out = True
+        progress("reader", "Source reading exceeded its time budget; using search snippets.")
+    except Exception as error:
+        fetched_by_index = {}
+        progress("reader", f"Source reading failed; using search snippets: {error}")
 
     for url, content in fetched_by_index.values():
         scraped_contents.append(f"Source: {url}\n{content}")
         sources.append(url)
         source_documents.append({"url": url, "content": content})
 
-    research = ("\n\n".join(scraped_contents) or format_results(search_data))[:6500]
     if not source_documents:
         source_documents = [
             {"url": result["url"], "content": content[:1000]}
@@ -180,36 +361,89 @@ def run_research_pipeline(
             if (url := result.get("url"))
             and (content := result.get("content") or result.get("snippet") or "").strip()
         ]
+    research = ("\n\n".join(scraped_contents) or format_results(search_data))[:6500]
+    if scrape_timed_out:
+        fallback_reason = "Source reading exceeded its time budget."
+
     progress("writer", "Writer agent is shaping the research into a report")
     report_chain = writer_chain if report_mode == "detailed" else summary_chain
     report_model = ResearchReport if report_mode == "detailed" else SummaryReport
-    report = stream_with_retry(
-        report_chain,
-        {"Topic": topic, "research": research},
-        "Report writer",
-        report_model,
-        on_writer_update,
-        lambda message: progress("writer", message),
-    )
-    report.sources = sources or report.sources
+    writer_timed_out = False
+    if remaining_budget() <= 0:
+        writer_timed_out = True
+    else:
+        try:
+            report = run_bounded(
+                lambda emit: stream_with_retry(
+                    report_chain,
+                    {"Topic": topic, "research": research},
+                    "Report writer",
+                    report_model,
+                    lambda partial: emit(("writer_update", partial)),
+                    lambda message: emit(("progress", "writer", message)),
+                ),
+                remaining_budget(),
+                dispatch_event,
+            )
+            report.sources = sources or report.sources
+        except TimeoutError:
+            writer_timed_out = True
+        except Exception as error:
+            writer_timed_out = True
+            fallback_reason = f"AI report writing failed: {error}"
+
+    if writer_timed_out:
+        report = build_fallback_report(topic, report_mode, source_documents)
+        report.sources = sources or report.sources
+        if fallback_reason:
+            fallback_reason += " AI report writing also exceeded its time budget."
+        else:
+            fallback_reason = "AI report writing exceeded the time budget."
 
     critique = None
-    if os.getenv("ENABLE_CRITIC", "true").lower() == "true":
-        progress("reviewer", "Reviewer agent is scoring the report")
-        critique = stream_with_retry(
-            critic_chain,
-            {"research_report": report.model_dump_json()},
-            "Report critic",
-            ResearchReportCritique,
-            on_reviewer_update,
-            lambda message: progress("reviewer", message),
-        )
+    review_note = None
+    if should_run_critic:
+        if remaining_budget() > 0 and not writer_timed_out:
+            progress("reviewer", "Reviewer agent is scoring the report")
+            try:
+                critique = run_bounded(
+                    lambda emit: stream_with_retry(
+                        critic_chain,
+                        {"research_report": report.model_dump_json()},
+                        "Report critic",
+                        ResearchReportCritique,
+                        lambda partial: emit(("reviewer_update", partial)),
+                        lambda message: emit(("progress", "reviewer", message)),
+                    ),
+                    min(10, remaining_budget()),
+                    dispatch_event,
+                )
+            except TimeoutError:
+                review_note = "Quality review exceeded its time budget; the report is ready."
+                progress("reviewer", review_note)
+            except Exception as error:
+                review_note = f"Quality review failed: {error}"
+                progress("reviewer", review_note)
+        else:
+            review_note = "Quality review skipped to return the report within its time budget."
+            progress("reviewer", review_note)
     return {
         "topic": topic,
         "report_mode": report_mode,
         "report": report,
         "critique": critique,
+        "review_note": review_note,
         "source_documents": source_documents,
+        "generation_note": (
+            f"Quick fallback report: {fallback_reason} Claims use only available search "
+            "snippets; verify the full sources before relying on them."
+            if writer_timed_out
+            else (
+                f"{fallback_reason} The AI writer used the available search snippets."
+                if fallback_reason
+                else None
+            )
+        ),
     }
 
 

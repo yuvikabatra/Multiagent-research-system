@@ -84,7 +84,8 @@ def search_web_results(query: str) -> dict:
     """Return raw Tavily search results for use by the research pipeline."""
     return tavily.search(
         query=query,
-        max_results=5
+        max_results=5,
+        timeout=12,
     )
 
 

@@ -43,6 +43,8 @@ llm = ChatOllama(
     base_url=OLLAMA_BASE_URL,
     temperature=0,
     num_predict=1300,
+    sync_client_kwargs={"timeout": 45},
+    async_client_kwargs={"timeout": 45},
     **ollama_kwargs,
 )
 
@@ -93,13 +95,14 @@ writer_prompt = ChatPromptTemplate.from_messages([
     ("system", "Write a structured, balanced, evidence-based research report. Avoid unsupported claims."),
     ("human", """Topic: {Topic}
 
-Use the research below. Return an executive summary, introduction, exactly 4 key findings, 3 evidence-and-implication points, 2 limitations, 3 improvements to be done, a conclusion, and source URLs. Each improvement must include a concrete topic-specific example, such as a missing comparison, statistic, case study, or source that would strengthen the report. Keep every item concise.
+Use the research below. Return an executive summary, introduction, exactly 4 key findings, 3 evidence-and-implication points, 2 limitations, 3 improvements to be done, a conclusion, and source URLs. Use 1-2 concise sentences for the summary, introduction, and conclusion, and one concise sentence per list item. Each improvement must include a concrete topic-specific example, such as a missing comparison, statistic, case study, or source that would strengthen the report.
 
 Research:
 {research}"""),
 ])
 
-writer_chain = writer_prompt | llm.bind(format=ResearchReport.model_json_schema()) | JsonOutputParser()
+writer_llm = llm.bind(options={"num_predict": 900})
+writer_chain = writer_prompt | writer_llm.bind(format=ResearchReport.model_json_schema()) | JsonOutputParser()
 
 summary_prompt = ChatPromptTemplate.from_messages([
     ("system", "Write a precise one-line research summary."),
@@ -111,7 +114,8 @@ Research:
 {research}"""),
 ])
 
-summary_chain = summary_prompt | llm.bind(format=SummaryReport.model_json_schema()) | JsonOutputParser()
+summary_llm = llm.bind(options={"num_predict": 160})
+summary_chain = summary_prompt | summary_llm.bind(format=SummaryReport.model_json_schema()) | JsonOutputParser()
 
 qa_prompt = ChatPromptTemplate.from_messages([
     ("system", """Answer the question using only the retrieved evidence. If the evidence does not support an answer, say so clearly and return no source IDs. Do not use outside knowledge. Return only source IDs shown in the evidence, and include only sources that directly support your answer."""),
@@ -131,5 +135,5 @@ critic_prompt = ChatPromptTemplate.from_messages([
 Research Response: {research_report}
 """),
 ])
-critic_llm = llm.bind(options={"num_predict": 500})
+critic_llm = llm.bind(options={"num_predict": 350})
 critic_chain = critic_prompt | critic_llm.bind(format=ResearchReportCritique.model_json_schema()) | JsonOutputParser()

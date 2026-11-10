@@ -31,6 +31,21 @@ TAVILY_API_KEY = "your-tavily-api-key"
 The app also reads `OLLAMA_BASE_URL` and `TAVILY_API_KEY` from environment
 variables on other hosting platforms.
 
+### Faster report generation
+
+The detailed report is generated with a capped output budget to reduce writer
+latency. The quality review is optional because it requires a second, sequential
+model call; leave **Run quality review** unchecked for the quickest result.
+To enable review for command-line runs by default, set `ENABLE_CRITIC=true`.
+Choose **One-line summary** when you need the fastest, shortest output.
+
+Each research request has a 100-second application-side budget. If search,
+source reading, or AI writing exceeds its budget, the app returns a clearly
+labeled fallback from the search snippets it has received instead of waiting
+for the model indefinitely. This bounds the app's wait under normal runtime
+conditions; it cannot guarantee a successful, fully AI-written report when
+external services or the hosting platform are unavailable.
+
 ### Optional Ollama proxy
 
 If Ollama runs on a separate machine, `ollama_proxy.py` can forward authenticated
